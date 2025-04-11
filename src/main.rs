@@ -181,7 +181,7 @@ fn display_detail_view(
     write!(
         stdout,
         "{}                                                                    {: <67}                                                               {}",
-        "CLI Wrapped".cyan().bold(),
+        "CLI Tracker".cyan().bold(),
         "<esc>: back, ↑/↓: navigate".dark_grey(),
         format!("history count: {}", entries.len()).cyan()
     )?;
