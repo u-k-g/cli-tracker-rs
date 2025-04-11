@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
+use chrono::{Datelike, Local, TimeZone, Timelike};
 use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
@@ -1119,7 +1119,15 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
 
         // Find peak day of week
         let mut day_of_week_counts = vec![0; 7];
-        for entry in active_entries.iter().filter(|e| e.timestamp > 0) {
+
+        // Filter to get only entries with valid timestamps
+        let entries_with_timestamps: Vec<&HistoryEntry> = active_entries
+            .iter()
+            .filter(|e| e.timestamp > 0)
+            .copied()
+            .collect();
+
+        for entry in &entries_with_timestamps {
             let dt = Local.timestamp_opt(entry.timestamp, 0);
             if let chrono::LocalResult::Single(dt) = dt {
                 let weekday = dt.weekday().num_days_from_monday() as usize;
@@ -1187,11 +1195,14 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         let distribution_start_x = 22; // Slightly adjust the starting position
         let day_spacing = 7; // Consistent spacing between day percentages
 
+        // Calculate total from day_of_week_counts to ensure percentages add up to 100%
+        let total_days_count: usize = day_of_week_counts.iter().sum();
+
         for (i, &count) in day_of_week_counts.iter().enumerate() {
-            let percentage = if active_entries.is_empty() {
+            let percentage = if total_days_count == 0 {
                 0
             } else {
-                count * 100 / active_entries.len().max(1)
+                count * 100 / total_days_count.max(1)
             };
             execute!(
                 stdout,
@@ -1214,10 +1225,13 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             }) => {
                 // Go back (all-time -> current month -> previous months)
                 if month_offset < 0 {
-                    // Already at all-time, do nothing
+                    // When in all-time view, switch to current month
+                    month_offset = 0;
                 } else {
+                    // When in a month view, go back one month (increase offset)
                     month_offset += 1;
                 }
+                continue; // Force immediate refresh of the display
             }
             Event::Key(KeyEvent {
                 code: KeyCode::Right,
@@ -1225,10 +1239,13 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             }) => {
                 // Go forward (previous months -> current month -> all-time)
                 if month_offset > 0 {
+                    // When viewing past months, move forward one month (decrease offset)
                     month_offset -= 1;
                 } else if month_offset == 0 {
-                    month_offset = -1; // From current month to all-time
+                    // When viewing current month, go to all-time view
+                    month_offset = -1;
                 }
+                continue; // Force immediate refresh of the display
             }
             _ => {}
         }
