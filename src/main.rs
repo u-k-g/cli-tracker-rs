@@ -748,9 +748,6 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             .saturating_sub(header_lines)
             .saturating_sub(border_lines);
 
-        // Top layer content (max 5 lines)
-        let top_layer_max = 5;
-
         // Time patterns content (start with 4, max 5)
         let time_patterns_min = 4;
         let time_patterns_max = 5;
@@ -766,8 +763,24 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         // 4. Then grow middle layer up to max
         // 5. Any extra goes to top layer (though it's capped at its max)
 
-        // Start with minimum allocation
-        let base_allocation = top_layer_max + middle_layer_min + time_patterns_min;
+        // Update top layer max to 6 to accommodate additional content line
+        let top_layer_max = 6; // Changed from 5 to 6
+
+        // When terminal height is limited, reduce middle box height
+        let adjusted_middle_layer_min = if term_height <= 20 {
+            2 // Reduce by 1 when height is limited
+        } else {
+            middle_layer_min
+        };
+
+        let adjusted_middle_layer_max = if term_height <= 20 {
+            middle_layer_max - 1 // Reduce max by 1 for limited height
+        } else {
+            middle_layer_max
+        };
+
+        // Start with minimum allocation using adjusted values
+        let base_allocation = top_layer_max + adjusted_middle_layer_min + time_patterns_min;
 
         // Determine how many extra lines we have beyond base allocation
         let extra_lines = content_lines.saturating_sub(base_allocation).min(20); // Cap extra at 20 to avoid excessive growth
@@ -777,11 +790,12 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         let time_patterns_content = time_patterns_min + time_patterns_extra;
 
         let middle_extra = if extra_lines > time_patterns_extra {
-            (middle_layer_max - middle_layer_min).min(extra_lines - time_patterns_extra)
+            (adjusted_middle_layer_max - adjusted_middle_layer_min)
+                .min(extra_lines - time_patterns_extra)
         } else {
             0
         };
-        let middle_layer_content = middle_layer_min + middle_extra;
+        let middle_layer_content = adjusted_middle_layer_min + middle_extra;
 
         // Top layer stays at max (already allocated in base_allocation)
         let top_layer_content = top_layer_max;
@@ -901,91 +915,6 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         // Total commands including those without timestamps
         let total_commands = active_entries.len();
 
-        // Top Left Box - General Statistics
-        draw_box(
-            &mut stdout,
-            0,
-            1,
-            left_box_width,
-            top_box_height,
-            Some("General Statistics"),
-        )?;
-
-        // Different stats depending on view
-        let general_stats = if month_offset < 0 {
-            // Lifetime stats
-            [
-                (
-                    "First command",
-                    if oldest > 0 {
-                        format_timestamp(oldest)
-                    } else {
-                        "N/A".to_string()
-                    },
-                ),
-                (
-                    "Last command",
-                    if newest > 0 {
-                        format_timestamp(newest)
-                    } else {
-                        "N/A".to_string()
-                    },
-                ),
-                (
-                    "Unique commands",
-                    active_entries
-                        .iter()
-                        .map(|e| &e.command)
-                        .collect::<std::collections::HashSet<_>>()
-                        .len()
-                        .to_string(),
-                ),
-            ]
-        } else {
-            // Monthly stats
-            [
-                (
-                    "First command",
-                    if oldest > 0 {
-                        format_timestamp(oldest)
-                    } else {
-                        "N/A".to_string()
-                    },
-                ),
-                (
-                    "Last command",
-                    if newest > 0 {
-                        format_timestamp(newest)
-                    } else {
-                        "N/A".to_string()
-                    },
-                ),
-                (
-                    "Commands per day",
-                    if days > 0 {
-                        format!("{:.1}", active_entries.len() as f64 / days as f64)
-                    } else {
-                        "0".to_string()
-                    },
-                ),
-            ]
-        };
-
-        for (i, (key, value)) in general_stats.iter().enumerate() {
-            execute!(stdout, cursor::MoveTo(3, 2 + i as u16))?;
-            write!(stdout, "{:<14} {}", key.with(Color::DarkGrey), value)?;
-        }
-
-        // Top Right Box - Activity Breakdown
-        draw_box(
-            &mut stdout,
-            left_box_width,
-            1,
-            right_box_width,
-            top_box_height,
-            Some("Activity Breakdown"),
-        )?;
-
         // Time metrics
         let now = chrono::Local::now();
         let today_start = now
@@ -1011,34 +940,135 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             .filter(|e| e.timestamp >= (now.timestamp() - month))
             .count();
 
+        // Top Left Box - General Statistics
+        draw_box(
+            &mut stdout,
+            0,
+            1,
+            left_box_width,
+            top_box_height,
+            Some("General Statistics"),
+        )?;
+
+        // Different stats depending on view
+        let general_stats = if month_offset < 0 {
+            // Lifetime stats
+            [
+                ("Today", commands_today.to_string()),
+                ("This week", commands_week.to_string()),
+                ("This month", commands_month.to_string()),
+                (
+                    "Daily average",
+                    if days == 0 {
+                        "0".to_string()
+                    } else {
+                        // Use total commands divided by days since first command
+                        format!("{:.1}", total_commands as f64 / days as f64)
+                    },
+                ),
+                (
+                    "Unique commands",
+                    active_entries
+                        .iter()
+                        .map(|e| &e.command)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        .to_string(),
+                ),
+                (
+                    "Usage trend",
+                    if month_offset < 0 && active_entries.len() > 10 {
+                        // For lifetime view, show if usage is increasing or decreasing
+                        let halfway = active_entries.len() / 2;
+                        let old_half_count = active_entries.iter().take(halfway).count();
+                        let new_half_count = active_entries.len() - old_half_count;
+
+                        if new_half_count > old_half_count * 12 / 10 {
+                            "↑ Increasing".to_string()
+                        } else if new_half_count < old_half_count * 8 / 10 {
+                            "↓ Decreasing".to_string()
+                        } else {
+                            "→ Steady".to_string()
+                        }
+                    } else {
+                        "N/A".to_string()
+                    },
+                ),
+            ]
+        } else {
+            // Monthly stats
+            [
+                ("Today", commands_today.to_string()),
+                ("This week", commands_week.to_string()),
+                ("This month", commands_month.to_string()),
+                (
+                    "Commands per day",
+                    if days > 0 {
+                        format!("{:.1}", active_entries.len() as f64 / days as f64)
+                    } else {
+                        "0".to_string()
+                    },
+                ),
+                (
+                    "Daily average",
+                    if days == 0 {
+                        "0".to_string()
+                    } else {
+                        // Use total commands divided by days since first command
+                        format!("{:.1}", total_commands as f64 / days as f64)
+                    },
+                ),
+                (
+                    "Usage trend",
+                    if month_offset < 0 && active_entries.len() > 10 {
+                        // For lifetime view, show if usage is increasing or decreasing
+                        let halfway = active_entries.len() / 2;
+                        let old_half_count = active_entries.iter().take(halfway).count();
+                        let new_half_count = active_entries.len() - old_half_count;
+
+                        if new_half_count > old_half_count * 12 / 10 {
+                            "↑ Increasing".to_string()
+                        } else if new_half_count < old_half_count * 8 / 10 {
+                            "↓ Decreasing".to_string()
+                        } else {
+                            "→ Steady".to_string()
+                        }
+                    } else {
+                        "N/A".to_string()
+                    },
+                ),
+            ]
+        };
+
+        for (i, (key, value)) in general_stats.iter().enumerate() {
+            execute!(stdout, cursor::MoveTo(3, 2 + i as u16))?;
+            write!(stdout, "{:<14} {}", key.with(Color::DarkGrey), value)?;
+        }
+
+        // Top Right Box - Activity Breakdown
+        draw_box(
+            &mut stdout,
+            left_box_width,
+            1,
+            right_box_width,
+            top_box_height,
+            Some("Activity Breakdown"),
+        )?;
+
+        // Activity stats moved to here
         let activity_stats = [
-            ("Today", commands_today.to_string()),
-            ("This week", commands_week.to_string()),
-            ("This month", commands_month.to_string()),
             (
-                "Daily average",
-                if days == 0 {
-                    "0".to_string()
+                "First command",
+                if oldest > 0 {
+                    format_timestamp(oldest)
                 } else {
-                    // Use total commands divided by days since first command
-                    format!("{:.1}", total_commands as f64 / days as f64)
+                    "N/A".to_string()
                 },
             ),
             (
-                "Usage trend",
-                if month_offset < 0 && active_entries.len() > 10 {
-                    // For lifetime view, show if usage is increasing or decreasing
-                    let halfway = active_entries.len() / 2;
-                    let old_half_count = active_entries.iter().take(halfway).count();
-                    let new_half_count = active_entries.len() - old_half_count;
-
-                    if new_half_count > old_half_count * 12 / 10 {
-                        "↑ Increasing".to_string()
-                    } else if new_half_count < old_half_count * 8 / 10 {
-                        "↓ Decreasing".to_string()
-                    } else {
-                        "→ Steady".to_string()
-                    }
+                "Last command",
+                if newest > 0 {
+                    format_timestamp(newest)
                 } else {
                     "N/A".to_string()
                 },
