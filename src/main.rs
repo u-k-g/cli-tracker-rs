@@ -44,6 +44,11 @@ fn get_zsh_history_path() -> Result<PathBuf> {
     Ok(home.join(".zsh_history"))
 }
 
+fn get_cli_stats_log_path() -> Result<PathBuf> {
+    let home = home::home_dir().context("Could not find home directory")?;
+    Ok(home.join(".cli_stats_log"))
+}
+
 fn parse_history_line(line: &str) -> Option<HistoryEntry> {
     let (timestamp, command_part) = if line.starts_with(": ") {
         let parts: Vec<&str> = line.splitn(3, ';').collect();
@@ -82,7 +87,46 @@ fn parse_history_line(line: &str) -> Option<HistoryEntry> {
     }
 }
 
+fn parse_cli_stats_line(line: &str) -> Option<HistoryEntry> {
+    let parts: Vec<&str> = line.splitn(3, ':').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let timestamp = parts[0].parse::<i64>().ok()?;
+    let command = parts[1].to_string();
+    let directory = Some(parts[2].to_string());
+
+    if !command.is_empty() {
+        Some(HistoryEntry {
+            timestamp,
+            command,
+            directory,
+            duration: None,  // No duration info in cli_stats_log
+            exit_code: None, // No exit code info in cli_stats_log
+        })
+    } else {
+        None
+    }
+}
+
 fn get_history_entries() -> Result<Vec<HistoryEntry>> {
+    // Try to read from CLI stats log first
+    let stats_path = get_cli_stats_log_path()?;
+    if let Ok(file) = File::open(&stats_path) {
+        let reader = BufReader::new(file);
+        let entries: Vec<HistoryEntry> = reader
+            .lines()
+            .filter_map(|line| line.ok())
+            .filter_map(|line| parse_cli_stats_line(&line))
+            .collect();
+
+        if !entries.is_empty() {
+            return Ok(entries);
+        }
+    }
+
+    // Fall back to zsh history if stats log is empty or not available
     let history_path = get_zsh_history_path()?;
     let file = File::open(history_path).context("Failed to open zsh history file")?;
     let reader = BufReader::new(file);
@@ -820,6 +864,12 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             0
         };
 
+        // Count commands with valid timestamps
+        let commands_with_timestamps = active_entries.iter().filter(|e| e.timestamp > 0).count();
+
+        // Total commands including those without timestamps
+        let total_commands = active_entries.len();
+
         // Top Left Box - General Statistics
         draw_box(
             &mut stdout,
@@ -936,10 +986,11 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             ("This month", commands_month.to_string()),
             (
                 "Daily average",
-                if active_entries.is_empty() || days == 0 {
+                if days == 0 {
                     "0".to_string()
                 } else {
-                    format!("{:.1}", active_entries.len() as f64 / days as f64)
+                    // Use total commands divided by days since first command
+                    format!("{:.1}", total_commands as f64 / days as f64)
                 },
             ),
             (
