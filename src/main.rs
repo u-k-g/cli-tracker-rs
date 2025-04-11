@@ -88,26 +88,57 @@ fn parse_history_line(line: &str) -> Option<HistoryEntry> {
 }
 
 fn parse_cli_stats_line(line: &str) -> Option<HistoryEntry> {
-    let parts: Vec<&str> = line.splitn(3, ':').collect();
-    if parts.len() < 3 {
-        return None;
-    }
+    // Format 1: ": timestamp:0;command:directory"
+    // Format 2: "command" (just the command)
+    // Format 3: ": timestamp:0;command" (no directory)
 
-    let timestamp = parts[0].parse::<i64>().ok()?;
-    let command = parts[1].to_string();
-    let directory = Some(parts[2].to_string());
+    if line.starts_with(": ") {
+        // Format 1 or 3 with timestamp
+        let timestamp_part = line.strip_prefix(": ")?;
+        let parts: Vec<&str> = timestamp_part.splitn(2, ';').collect();
+        if parts.len() < 2 {
+            return None;
+        }
 
-    if !command.is_empty() {
-        Some(HistoryEntry {
-            timestamp,
-            command,
-            directory,
-            duration: None,  // No duration info in cli_stats_log
-            exit_code: None, // No exit code info in cli_stats_log
-        })
+        // Get timestamp from first part (timestamp:0)
+        let ts_parts: Vec<&str> = parts[0].splitn(2, ':').collect();
+        let timestamp = ts_parts[0].parse::<i64>().ok()?;
+
+        // Get command and possibly directory
+        let cmd_dir_parts: Vec<&str> = parts[1].splitn(2, ':').collect();
+        let command = cmd_dir_parts[0].to_string();
+
+        // If we have a directory part
+        let directory = if cmd_dir_parts.len() > 1 {
+            Some(cmd_dir_parts[1].to_string())
+        } else {
+            None
+        };
+
+        if !command.is_empty() {
+            return Some(HistoryEntry {
+                timestamp,
+                command,
+                directory,
+                duration: None,
+                exit_code: None,
+            });
+        }
     } else {
-        None
+        // Format 2: just the command
+        let command = line.trim().to_string();
+        if !command.is_empty() {
+            return Some(HistoryEntry {
+                timestamp: 0, // No timestamp available
+                command,
+                directory: None,
+                duration: None,
+                exit_code: None,
+            });
+        }
     }
+
+    None
 }
 
 fn get_history_entries() -> Result<Vec<HistoryEntry>> {
@@ -1309,8 +1340,35 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
     Ok(())
 }
 
+// Add this function before main to test our parsing logic
+fn test_cli_stats_parsing() {
+    println!("Testing .cli_stats_log parsing:");
+
+    let test_lines = [
+        ": 1744408370:0;bat ~/.cli_stats_log:/Users/uzair/01-dev/cli-wrapped",
+        "bunx create-expo-app@latest",
+        ": 1744341672:0;cargo run -- history",
+    ];
+
+    for (i, line) in test_lines.iter().enumerate() {
+        println!("\nTest case {}: {}", i + 1, line);
+        if let Some(entry) = parse_cli_stats_line(line) {
+            println!("✅ Parsed successfully:");
+            println!("  Timestamp: {}", entry.timestamp);
+            println!("  Command: {}", entry.command);
+            println!("  Directory: {:?}", entry.directory);
+        } else {
+            println!("❌ Failed to parse");
+        }
+    }
+    println!("\nParsing test completed\n");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Test the parsing function
+    test_cli_stats_parsing();
+
     let cli = Cli::parse();
 
     match cli.command {
