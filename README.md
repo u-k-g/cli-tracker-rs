@@ -1,4 +1,4 @@
-# CLI Tracker & Analyzer
+# CLI Wrapped
 
 A Rust-based CLI tool designed to silently track your terminal command usage and provide insightful statistics and analysis, including a fun "Spotify Wrapped" style summary.
 
@@ -32,25 +32,25 @@ When you want to explore your command habits, you can use the CLI interface to v
 
 ```bash
 # View command history interactively
-cli-tracker history
+cli-wrapped history
 
 # View command frequency statistics
-cli-tracker stats frequency
+cli-wrapped stats frequency
 
 # View stats for a specific time period
-cli-tracker stats --period last-month
+cli-wrapped stats --period last-month
 
 # Generate the "Terminal Wrapped" summary for the year
-cli-tracker wrapped --year 2024
+cli-wrapped wrapped --year 2024
 
 # Check the status of the background tracker
-cli-tracker status
+cli-wrapped status
 
 # Start the background tracker (if not running)
-cli-tracker start-tracker
+cli-wrapped start-tracker
 
 # Stop the background tracker
-cli-tracker stop-tracker
+cli-wrapped stop-tracker
 ```
 *(Note: These commands represent the intended final functionality and may change during development.)*
 
@@ -59,16 +59,16 @@ cli-tracker stop-tracker
 Once released, installation will likely be via Cargo:
 
 ```bash
-cargo install cli-tracker
+cargo install cli-wrapped
 ```
 
 Or by building from source:
 
 ```bash
 git clone <repository-url>
-cd cli-tracker
+cd cli-wrapped
 cargo build --release
-# Find the binary in ./target/release/cli-tracker
+# Find the binary in ./target/release/cli-wrapped
 ```
 
 ## Technology Stack
