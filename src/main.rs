@@ -480,7 +480,8 @@ fn run_interactive_viewer(entries: Vec<HistoryEntry>) -> Result<()> {
     execute!(stdout, cursor::Hide)?;
 
     let mut current_index = entries.len().saturating_sub(1);
-    let mut view_mode: Option<usize> = None; // None for list view, Some(index) for detail view
+    // Start directly in detail view mode with the most recent command
+    let mut view_mode: Option<usize> = Some(current_index);
 
     // Theme colors
     let header_color = Color::Cyan;
