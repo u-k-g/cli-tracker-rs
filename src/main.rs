@@ -615,6 +615,20 @@ fn run_interactive_viewer(entries: Vec<HistoryEntry>) -> Result<()> {
                             view_mode = Some(detail_index + 1);
                         }
                     }
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        if event::poll(std::time::Duration::from_millis(100))? {
+                            if let Event::Key(KeyEvent {
+                                code: KeyCode::Char('c'),
+                                modifiers,
+                                ..
+                            }) = event::read()?
+                            {
+                                if modifiers.contains(event::KeyModifiers::CONTROL) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -664,7 +678,10 @@ fn run_interactive_viewer(entries: Vec<HistoryEntry>) -> Result<()> {
             stdout.flush()?;
 
             // Input handling for List View
-            if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
                 match code {
                     KeyCode::Char('q') | KeyCode::Esc => break, // Exit the loop
                     KeyCode::Up | KeyCode::Char('k') => {
@@ -673,8 +690,16 @@ fn run_interactive_viewer(entries: Vec<HistoryEntry>) -> Result<()> {
                     KeyCode::Down | KeyCode::Char('j') => {
                         current_index = (current_index + 1).min(entries.len().saturating_sub(1));
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char('l') => {
                         view_mode = Some(current_index); // Switch to detail view
+                    }
+                    KeyCode::Char('h') => {
+                        // In list view, 'h' doesn't do anything special
+                    }
+                    KeyCode::Char('c') => {
+                        if modifiers.contains(event::KeyModifiers::CONTROL) {
+                            break;
+                        }
                     }
                     _ => {}
                 }
@@ -697,8 +722,8 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
     terminal::enable_raw_mode()?;
     execute!(stdout, cursor::Hide)?;
 
-    // Track current view: -1 = lifetime stats, 0 = current month, 1 = last month, etc.
-    let mut month_offset: i64 = -1;
+    // Track current view: -1 = lifetime stats, 0 = current week, 1 = last week, etc.
+    let mut week_offset: i64 = -1;
 
     loop {
         // Get terminal size
@@ -722,10 +747,18 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
 
             // Wait for input and check if terminal has been resized
             if let Event::Key(KeyEvent {
-                code: KeyCode::Esc, ..
+                code, modifiers, ..
             }) = event::read()?
             {
-                break;
+                match code {
+                    KeyCode::Esc => break,
+                    KeyCode::Char('c') => {
+                        if modifiers.contains(event::KeyModifiers::CONTROL) {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
             }
             continue;
         }
@@ -748,9 +781,9 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             .saturating_sub(header_lines)
             .saturating_sub(border_lines);
 
-        // Time patterns content (start with 4, max 5)
-        let time_patterns_min = 4;
-        let time_patterns_max = 5;
+        // Time patterns content (reduced from 4 to 3 since we're removing a line)
+        let time_patterns_min = 3;
+        let time_patterns_max = 4;
 
         // Middle layer content (start with 3, max 10)
         let middle_layer_min = 3;
@@ -820,55 +853,54 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         let right_box_width = usable_width - half_width;
 
         // Define the active entries based on current view
-        let (view_name, active_entries): (String, Vec<&HistoryEntry>) = if month_offset < 0 {
+        let (view_name, active_entries): (String, Vec<&HistoryEntry>) = if week_offset < 0 {
             // Lifetime stats view
             ("All-time Stats".to_string(), entries.iter().collect())
         } else {
-            // Month-specific view
+            // Week-specific view
             let now = chrono::Local::now();
-            let start_of_month = now
-                .with_day(1)
-                .unwrap()
-                .with_hour(0)
-                .unwrap()
-                .with_minute(0)
-                .unwrap()
-                .with_second(0)
-                .unwrap()
-                - chrono::Duration::days(30 * month_offset);
 
-            // End of month is start of next month minus 1 second
-            let next_month = if start_of_month.month() == 12 {
-                start_of_month
-                    .with_month(1)
-                    .unwrap()
-                    .with_year(start_of_month.year() + 1)
-                    .unwrap()
-            } else {
-                start_of_month
-                    .with_month(start_of_month.month() + 1)
-                    .unwrap()
-            };
+            // Calculate the start of the current week (Monday at 00:00:00)
+            let days_since_monday = now.weekday().num_days_from_monday() as i64;
+            let start_of_week = now
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_local_timezone(chrono::Local)
+                .unwrap()
+                - chrono::Duration::days(days_since_monday)
+                - chrono::Duration::days(7 * week_offset);
 
-            let end_of_month = next_month - chrono::Duration::seconds(1);
+            // End of week is start of next week minus 1 second
+            let end_of_week =
+                start_of_week + chrono::Duration::days(7) - chrono::Duration::seconds(1);
 
-            // Filter entries for specific month
-            let month_entries = entries
+            // Get ISO week number of the year (1-52/53)
+            let week_number = start_of_week.iso_week().week();
+
+            // Format month abbreviation
+            let month_name = start_of_week.format("%b").to_string();
+
+            // Create view name in format "Week # [Month]"
+            let view_name = format!("Week {} [{}]", week_number, month_name);
+
+            // Filter entries for specific week
+            let week_entries = entries
                 .iter()
                 .filter(|e| {
                     let ts = e.timestamp;
-                    ts >= start_of_month.timestamp() && ts <= end_of_month.timestamp()
+                    ts >= start_of_week.timestamp() && ts <= end_of_week.timestamp()
                 })
                 .collect();
 
-            (start_of_month.format("%B %Y").to_string(), month_entries)
+            (view_name, week_entries)
         };
 
         // Header with view name
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
         // Get the terminal width to properly center the controls text
-        let controls_text = "<←/→>: change view, <esc>: exit".dark_grey();
+        let controls_text = "<←/h: prev, →/l: next, esc/q: exit>".dark_grey();
         let left_text = format!("CLI Wrapped: {}", view_name).cyan().bold();
         let right_text = format!("commands: {}", active_entries.len()).cyan();
 
@@ -915,8 +947,106 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         // Total commands including those without timestamps
         let total_commands = active_entries.len();
 
-        // Time metrics
+        // Time metrics for the current week
         let now = chrono::Local::now();
+
+        // For specific week view, calculate the start/end of the selected week
+        let (this_week_start, this_week_end) = if week_offset >= 0 {
+            let days_since_monday = now.weekday().num_days_from_monday() as i64;
+            let start_of_week = now
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_local_timezone(chrono::Local)
+                .unwrap()
+                - chrono::Duration::days(days_since_monday)
+                - chrono::Duration::days(7 * week_offset);
+
+            let end_of_week =
+                start_of_week + chrono::Duration::days(7) - chrono::Duration::seconds(1);
+
+            (start_of_week.timestamp(), end_of_week.timestamp())
+        } else {
+            // For all-time view, use current week
+            let days_since_monday = now.weekday().num_days_from_monday() as i64;
+            let start_of_week = now
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_local_timezone(chrono::Local)
+                .unwrap()
+                - chrono::Duration::days(days_since_monday);
+
+            let end_of_week =
+                start_of_week + chrono::Duration::days(7) - chrono::Duration::seconds(1);
+
+            (start_of_week.timestamp(), end_of_week.timestamp())
+        };
+
+        // For specific week view, calculate the start/end of the month containing the selected week
+        let (this_month_start, this_month_end) = if week_offset >= 0 {
+            let days_since_monday = now.weekday().num_days_from_monday() as i64;
+            let selected_week_day = now
+                - chrono::Duration::days(days_since_monday)
+                - chrono::Duration::days(7 * week_offset);
+
+            let start_of_month = selected_week_day
+                .with_day(1)
+                .unwrap()
+                .with_hour(0)
+                .unwrap()
+                .with_minute(0)
+                .unwrap()
+                .with_second(0)
+                .unwrap();
+
+            // End of month is start of next month minus 1 second
+            let next_month = if start_of_month.month() == 12 {
+                start_of_month
+                    .with_month(1)
+                    .unwrap()
+                    .with_year(start_of_month.year() + 1)
+                    .unwrap()
+            } else {
+                start_of_month
+                    .with_month(start_of_month.month() + 1)
+                    .unwrap()
+            };
+
+            let end_of_month = next_month - chrono::Duration::seconds(1);
+
+            (start_of_month.timestamp(), end_of_month.timestamp())
+        } else {
+            // For all-time view, use current month
+            let start_of_month = now
+                .with_day(1)
+                .unwrap()
+                .with_hour(0)
+                .unwrap()
+                .with_minute(0)
+                .unwrap()
+                .with_second(0)
+                .unwrap();
+
+            // End of month is start of next month minus 1 second
+            let next_month = if start_of_month.month() == 12 {
+                start_of_month
+                    .with_month(1)
+                    .unwrap()
+                    .with_year(start_of_month.year() + 1)
+                    .unwrap()
+            } else {
+                start_of_month
+                    .with_month(start_of_month.month() + 1)
+                    .unwrap()
+            };
+
+            let end_of_month = next_month - chrono::Duration::seconds(1);
+
+            (start_of_month.timestamp(), end_of_month.timestamp())
+        };
+
+        // Get today's date for the "today" metric
         let today_start = now
             .date_naive()
             .and_hms_opt(0, 0, 0)
@@ -924,20 +1054,21 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             .and_local_timezone(chrono::Local)
             .unwrap()
             .timestamp();
-        let day = 86400;
-        let week = day * 7;
-        let month = day * 30;
 
+        // Count commands for different time periods, specific to the view
         let commands_today = entries
             .iter()
             .filter(|e| e.timestamp >= today_start)
             .count();
-        let days_since_monday = now.weekday().num_days_from_monday() as i64;
-        let week_start = today_start - (days_since_monday * day);
-        let commands_week = entries.iter().filter(|e| e.timestamp >= week_start).count();
-        let commands_month = entries
+
+        let commands_this_week = entries
             .iter()
-            .filter(|e| e.timestamp >= (now.timestamp() - month))
+            .filter(|e| e.timestamp >= this_week_start && e.timestamp <= this_week_end)
+            .count();
+
+        let commands_this_month = entries
+            .iter()
+            .filter(|e| e.timestamp >= this_month_start && e.timestamp <= this_month_end)
             .count();
 
         // Top Left Box - General Statistics
@@ -951,19 +1082,20 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         )?;
 
         // Different stats depending on view
-        let general_stats = if month_offset < 0 {
+        let general_stats = if week_offset < 0 {
             // Lifetime stats
             [
                 ("Today", commands_today.to_string()),
-                ("This week", commands_week.to_string()),
-                ("This month", commands_month.to_string()),
+                ("This week", commands_this_week.to_string()),
+                ("This month", commands_this_month.to_string()),
                 (
-                    "Daily average",
+                    "Weekly average",
                     if days == 0 {
                         "0".to_string()
                     } else {
-                        // Use total commands divided by days since first command
-                        format!("{:.1}", total_commands as f64 / days as f64)
+                        // Calculate weeks since first command
+                        let weeks = (days as f64 / 7.0).ceil().max(1.0);
+                        format!("{:.1}", total_commands as f64 / weeks)
                     },
                 ),
                 (
@@ -977,7 +1109,7 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                 ),
                 (
                     "Usage trend",
-                    if month_offset < 0 && active_entries.len() > 10 {
+                    if week_offset < 0 && active_entries.len() > 10 {
                         // For lifetime view, show if usage is increasing or decreasing
                         let halfway = active_entries.len() / 2;
                         let old_half_count = active_entries.iter().take(halfway).count();
@@ -996,11 +1128,11 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                 ),
             ]
         } else {
-            // Monthly stats
+            // Weekly stats
             [
                 ("Today", commands_today.to_string()),
-                ("This week", commands_week.to_string()),
-                ("This month", commands_month.to_string()),
+                ("This week", commands_this_week.to_string()),
+                ("This month", commands_this_month.to_string()),
                 (
                     "Commands per day",
                     if days > 0 {
@@ -1010,25 +1142,31 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                     },
                 ),
                 (
-                    "Daily average",
-                    if days == 0 {
-                        "0".to_string()
-                    } else {
-                        // Use total commands divided by days since first command
-                        format!("{:.1}", total_commands as f64 / days as f64)
-                    },
+                    "Unique commands",
+                    active_entries
+                        .iter()
+                        .map(|e| &e.command)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        .to_string(),
                 ),
                 (
                     "Usage trend",
-                    if month_offset < 0 && active_entries.len() > 10 {
-                        // For lifetime view, show if usage is increasing or decreasing
-                        let halfway = active_entries.len() / 2;
-                        let old_half_count = active_entries.iter().take(halfway).count();
-                        let new_half_count = active_entries.len() - old_half_count;
+                    if active_entries.len() > 10 {
+                        // For weekly view, compare to previous week
+                        let prev_week_start = this_week_start - 86400 * 7;
+                        let prev_week_end = this_week_end - 86400 * 7;
 
-                        if new_half_count > old_half_count * 12 / 10 {
+                        let prev_week_count = entries
+                            .iter()
+                            .filter(|e| {
+                                e.timestamp >= prev_week_start && e.timestamp <= prev_week_end
+                            })
+                            .count();
+
+                        if commands_this_week > prev_week_count * 12 / 10 {
                             "↑ Increasing".to_string()
-                        } else if new_half_count < old_half_count * 8 / 10 {
+                        } else if commands_this_week < prev_week_count * 8 / 10 {
                             "↓ Decreasing".to_string()
                         } else {
                             "→ Steady".to_string()
@@ -1289,18 +1427,8 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             write!(stdout, "Peak day: None")?;
         }
 
-        // Put peak time of week on its own line
-        execute!(stdout, cursor::MoveTo(3, bottom_y + 4))?;
-        if *peak_count > 0 && *peak_day_count > 0 {
-            write!(
-                stdout,
-                "Peak time of week: {} at {:02}:00",
-                peak_day, peak_hour
-            )?;
-        }
-
         // Day of week distribution with better alignment
-        execute!(stdout, cursor::MoveTo(3, bottom_y + 5))?;
+        execute!(stdout, cursor::MoveTo(3, bottom_y + 4))?;
         write!(stdout, "Day distribution: ")?;
 
         let days = ["M", "T", "W", "T", "F", "S", "S"];
@@ -1318,7 +1446,7 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             };
             execute!(
                 stdout,
-                cursor::MoveTo(distribution_start_x + i as u16 * day_spacing, bottom_y + 5)
+                cursor::MoveTo(distribution_start_x + i as u16 * day_spacing, bottom_y + 4)
             )?;
             write!(stdout, "{}:{}%", days[i], percentage)?;
         }
@@ -1330,34 +1458,55 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         match event::read()? {
             Event::Key(KeyEvent {
                 code: KeyCode::Esc, ..
+            })
+            | Event::Key(KeyEvent {
+                code: KeyCode::Char('q'),
+                ..
             }) => break,
             Event::Key(KeyEvent {
                 code: KeyCode::Left,
                 ..
+            })
+            | Event::Key(KeyEvent {
+                code: KeyCode::Char('h'),
+                ..
             }) => {
-                // Go back (all-time -> current month -> previous months)
-                if month_offset < 0 {
-                    // When in all-time view, switch to current month
-                    month_offset = 0;
+                // Go back (all-time -> current week -> previous weeks)
+                if week_offset < 0 {
+                    // When in all-time view, switch to current week
+                    week_offset = 0;
                 } else {
-                    // When in a month view, go back one month (increase offset)
-                    month_offset += 1;
+                    // When in a week view, go back one week (increase offset)
+                    week_offset += 1;
                 }
                 continue; // Force immediate refresh of the display
             }
             Event::Key(KeyEvent {
                 code: KeyCode::Right,
                 ..
+            })
+            | Event::Key(KeyEvent {
+                code: KeyCode::Char('l'),
+                ..
             }) => {
-                // Go forward (previous months -> current month -> all-time)
-                if month_offset > 0 {
-                    // When viewing past months, move forward one month (decrease offset)
-                    month_offset -= 1;
-                } else if month_offset == 0 {
-                    // When viewing current month, go to all-time view
-                    month_offset = -1;
+                // Go forward (previous weeks -> current week -> all-time)
+                if week_offset > 0 {
+                    // When viewing past weeks, move forward one week (decrease offset)
+                    week_offset -= 1;
+                } else if week_offset == 0 {
+                    // When viewing current week, go to all-time view
+                    week_offset = -1;
                 }
                 continue; // Force immediate refresh of the display
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers,
+                ..
+            }) => {
+                if modifiers.contains(event::KeyModifiers::CONTROL) {
+                    break;
+                }
             }
             _ => {}
         }
