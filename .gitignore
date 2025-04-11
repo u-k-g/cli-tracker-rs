@@ -1,3 +1,4 @@
 /target
 .cursor
 .commitlintrc.js
+.DS_Store
