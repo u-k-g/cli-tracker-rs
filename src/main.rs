@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local, TimeZone, Timelike};
 use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
@@ -32,6 +32,9 @@ enum Commands {
 struct HistoryEntry {
     timestamp: i64,
     command: String,
+    directory: Option<String>,
+    duration: Option<i64>,
+    exit_code: Option<i32>,
 }
 
 fn get_zsh_history_path() -> Result<PathBuf> {
@@ -56,9 +59,21 @@ fn parse_history_line(line: &str) -> Option<HistoryEntry> {
     let clean_command = command_part.trim().to_string();
 
     if !clean_command.is_empty() {
+        // Extract directory from cd commands
+        let directory = if clean_command.starts_with("cd ") {
+            clean_command
+                .strip_prefix("cd ")
+                .map(|s| s.trim().to_string())
+        } else {
+            None
+        };
+
         Some(HistoryEntry {
             timestamp,
             command: clean_command,
+            directory,
+            duration: None,  // We don't have duration info in zsh history
+            exit_code: None, // We don't have exit code info in zsh history
         })
     } else {
         None
@@ -181,18 +196,9 @@ fn display_detail_view(
     write!(
         stdout,
         "{}                                                                    {: <67}                                                               {}",
-        "CLI Tracker".cyan().bold(),
+        "CLI Wrapped".cyan().bold(),
         "<esc>: back, ↑/↓: navigate".dark_grey(),
         format!("history count: {}", entries.len()).cyan()
-    )?;
-
-    execute!(stdout, cursor::MoveTo(2, 1))?;
-    write!(
-        stdout,
-        "{} {} {}",
-        "Search".dark_grey(),
-        VERTICAL,
-        "Inspect".bold()
     )?;
 
     // Command navigation section - top row with 3 boxes
@@ -201,7 +207,7 @@ fn display_detail_view(
     let cmd_width = term_width / 3;
     let next_width = term_width - prev_width - cmd_width;
 
-    // Previous command box (older command)
+    // Previous command box (older command) - normal styling
     draw_box(
         stdout,
         1,
@@ -210,6 +216,8 @@ fn display_detail_view(
         box_height,
         Some("Previous command"),
     )?;
+
+    // Write previous command with normal color
     write_in_box(stdout, 1, 3, prev_cmd, 1)?;
 
     // Current command box
@@ -223,16 +231,61 @@ fn display_detail_view(
     )?;
     write_in_box(stdout, prev_width + 1, 3, &entry.command, 1)?;
 
-    // Next command box (newer command)
+    // Next command box (newer command) - normal styling
     draw_box(
         stdout,
         prev_width + cmd_width + 1,
         2,
-        next_width,
+        next_width - 1, // Adjust width to fix alignment
         box_height,
         Some("Next command"),
     )?;
+
+    // Write next command with normal color
     write_in_box(stdout, prev_width + cmd_width + 1, 3, next_cmd, 1)?;
+
+    // Calculate command stats
+    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+    let hostname = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    // Find the current working directory
+    let current_dir = if let Some(dir) = &entry.directory {
+        dir.clone()
+    } else {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    };
+
+    // Count how many times this command appears in history
+    let total_runs = entries
+        .iter()
+        .filter(|e| e.command == entry.command)
+        .count();
+
+    // Calculate command position in history (starting from 1 for oldest)
+    let history_position = current_index + 1;
+
+    // Gather real stats from the history entries and environment
+    let stats = [
+        ("History number", history_position.to_string()),
+        ("User", username),
+        ("Time", format_timestamp(entry.timestamp)),
+        ("Directory", current_dir),
+        ("Total runs", total_runs.to_string()),
+        (
+            "Recent runs",
+            format!(
+                "{}",
+                entries
+                    .iter()
+                    .filter(|e| e.command == entry.command && e.timestamp > entry.timestamp - 86400)
+                    .count()
+            ),
+        ),
+    ];
 
     // Command stats box - left column
     let stats_height = 14;
@@ -246,61 +299,172 @@ fn display_detail_view(
         Some("Command stats"),
     )?;
 
-    // Let's include some mock stats data typical of shell command executions
-    let stats = [
-        ("Host", "laptop"),
-        ("User", "uzair"),
-        ("Time", &format_timestamp(entry.timestamp)),
-        ("Duration", "36s"),
-        ("Avg duration", "36s"),
-        ("Exit", "0"),
-        ("Directory", "/Users/uzair/01-dev/cli-tracker-rs"),
-        ("Session", "019622b68ffe7452975ef38a2cbd7953"),
-        ("Total runs", "5"),
-    ];
-
     for (i, (key, value)) in stats.iter().enumerate() {
         let line = box_height + 4 + i as u16;
         execute!(stdout, cursor::MoveTo(3, line))?;
         write!(stdout, "{:<14} {}", key.with(Color::DarkGrey), value)?;
     }
 
-    // Exit code distribution box - right top
+    // List of similar commands - right top
     draw_box(
         stdout,
         stats_width + 1,
         box_height + 2,
         term_width - stats_width - 1,
         5,
-        Some("Exit code distribution"),
+        Some("Similar commands"),
     )?;
-    write_in_box(stdout, stats_width + 1, box_height + 3, "███", 1)?;
-    write_in_box(stdout, stats_width + 1, box_height + 4, "█0█ ▄130▄", 1)?;
 
-    // Runs per day box - right middle
+    // Find similar commands (commands that start with the same word)
+    let first_word = entry.command.split_whitespace().next().unwrap_or("");
+    let similar_commands: Vec<&HistoryEntry> = entries
+        .iter()
+        .filter(|e| {
+            let e_first_word = e.command.split_whitespace().next().unwrap_or("");
+            e_first_word == first_word && e.command != entry.command
+        })
+        .take(3)
+        .collect();
+
+    for (i, similar) in similar_commands.iter().enumerate() {
+        let line = box_height + 3 + i as u16;
+        let display = if similar.command.len() > 40 {
+            format!("{}...", &similar.command[..37])
+        } else {
+            similar.command.clone()
+        };
+        write_in_box(stdout, stats_width + 1, line, &display, 1)?;
+    }
+
+    // Command frequency by hour - right middle
     draw_box(
         stdout,
         stats_width + 1,
         box_height + 7,
         term_width - stats_width - 1,
         4,
-        Some("Runs per day"),
+        Some("Command frequency by hour"),
     )?;
-    write_in_box(stdout, stats_width + 1, box_height + 8, "█5█", 1)?;
-    write_in_box(stdout, stats_width + 1, box_height + 9, "Fri", 1)?;
 
-    // Duration over time box - right bottom
+    // Count commands by hour of day (based on timestamps)
+    let mut hour_counts = vec![0; 24];
+    for e in entries
+        .iter()
+        .filter(|e| e.command == entry.command && e.timestamp > 0)
+    {
+        let dt = Local.timestamp_opt(e.timestamp, 0);
+        if let chrono::LocalResult::Single(dt) = dt {
+            let hour = dt.hour() as usize;
+            if hour < 24 {
+                hour_counts[hour] += 1;
+            }
+        }
+    }
+
+    // Find max for scaling
+    let max_count = hour_counts.iter().max().copied().unwrap_or(1);
+
+    // Calculate average usage
+    let total_usage: i32 = hour_counts.iter().sum();
+    let active_hours = hour_counts.iter().filter(|&&count| count > 0).count();
+    let avg_usage = if active_hours > 0 {
+        total_usage as f64 / active_hours as f64
+    } else {
+        0.0
+    };
+
+    // Create a simpler +/- visualization where + is above average and - is below
+    let mut hour_viz = String::new();
+    hour_viz.push_str("[Hours] ");
+    for i in 0..24 {
+        // Use - for below average, + for above average, · for zeros
+        let symbol = if hour_counts[i] == 0 {
+            "·"
+        } else if (hour_counts[i] as f64) < avg_usage {
+            "-"
+        } else {
+            "+"
+        };
+        hour_viz.push_str(symbol);
+    }
+
+    write_in_box(stdout, stats_width + 1, box_height + 8, &hour_viz, 1)?;
+    write_in_box(
+        stdout,
+        stats_width + 1,
+        box_height + 9,
+        &format!(
+            "Peak times: {}",
+            hour_counts
+                .iter()
+                .enumerate()
+                .filter(|(_, &count)| count > 2 * max_count / 3)
+                .map(|(hour, _)| format!("{:02}:00", hour))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        1,
+    )?;
+
+    // Command usage over time - right bottom
     draw_box(
         stdout,
         stats_width + 1,
         box_height + 11,
         term_width - stats_width - 1,
         5,
-        Some("Duration over time"),
+        Some("Command usage over time"),
     )?;
-    write_in_box(stdout, stats_width + 1, box_height + 12, "█████", 1)?;
-    write_in_box(stdout, stats_width + 1, box_height + 13, "█36s█", 1)?;
-    write_in_box(stdout, stats_width + 1, box_height + 14, "04/25", 1)?;
+
+    // Group commands by day for a simple timeline
+    let mut days = std::collections::HashMap::new();
+    for e in entries
+        .iter()
+        .filter(|e| e.command == entry.command && e.timestamp > 0)
+    {
+        let dt = Local.timestamp_opt(e.timestamp, 0);
+        if let chrono::LocalResult::Single(dt) = dt {
+            let day = dt.format("%m/%d").to_string();
+            *days.entry(day).or_insert(0) += 1;
+        }
+    }
+
+    // Sort by date and take most recent
+    let mut days: Vec<(String, i32)> = days.into_iter().collect();
+    days.sort_by(|a, b| b.0.cmp(&a.0)); // Sort descending by date
+    days.truncate(7); // Keep only the 7 most recent days
+    days.reverse(); // Show oldest to newest
+
+    // Create a sparkline-style visualization
+    let max_day_count = days.iter().map(|(_, count)| *count).max().unwrap_or(1);
+    let days_viz = days
+        .iter()
+        .map(|(day, count)| {
+            let intensity = (*count as f64 / max_day_count as f64 * 5.0).round() as usize;
+            let symbol = match intensity {
+                0 => "▁",
+                1 => "▂",
+                2 => "▃",
+                3 => "▄",
+                4 => "▅",
+                _ => "▆",
+            };
+            format!("{}: {}", day, symbol)
+        })
+        .collect::<Vec<_>>()
+        .join("  ");
+
+    write_in_box(stdout, stats_width + 1, box_height + 12, &days_viz, 1)?;
+
+    // Show most frequent day
+    if !days.is_empty() {
+        let most_frequent = days
+            .iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(day, count)| format!("Most active: {} ({} times)", day, count))
+            .unwrap_or_else(|| "No data".to_string());
+        write_in_box(stdout, stats_width + 1, box_height + 13, &most_frequent, 1)?;
+    }
 
     // Footer
     execute!(stdout, cursor::MoveTo(1, term_height - 1))?;
