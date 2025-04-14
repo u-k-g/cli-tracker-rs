@@ -1088,16 +1088,16 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                 ("Today", commands_today.to_string()),
                 ("This week", commands_this_week.to_string()),
                 ("This month", commands_this_month.to_string()),
-                (
-                    "Weekly average",
+                ("Weekly average", {
                     if days == 0 {
                         "0".to_string()
                     } else {
                         // Calculate weeks since first command
                         let weeks = (days as f64 / 7.0).ceil().max(1.0);
-                        format!("{:.1}", total_commands as f64 / weeks)
-                    },
-                ),
+                        // Use commands_with_timestamps for accurate time-based average
+                        format!("{:.1}", commands_with_timestamps as f64 / weeks)
+                    }
+                }),
                 (
                     "Unique commands",
                     active_entries
@@ -1107,8 +1107,7 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                         .len()
                         .to_string(),
                 ),
-                (
-                    "Usage trend",
+                ("Usage trend", {
                     if week_offset < 0 && active_entries.len() > 10 {
                         // For lifetime view, show if usage is increasing or decreasing
                         let halfway = active_entries.len() / 2;
@@ -1124,8 +1123,8 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                         }
                     } else {
                         "N/A".to_string()
-                    },
-                ),
+                    }
+                }),
             ]
         } else {
             // Weekly stats
@@ -1133,14 +1132,13 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                 ("Today", commands_today.to_string()),
                 ("This week", commands_this_week.to_string()),
                 ("This month", commands_this_month.to_string()),
-                (
-                    "Commands per day",
+                ("Commands per day", {
                     if days > 0 {
                         format!("{:.1}", active_entries.len() as f64 / days as f64)
                     } else {
                         "0".to_string()
-                    },
-                ),
+                    }
+                }),
                 (
                     "Unique commands",
                     active_entries
@@ -1150,8 +1148,7 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                         .len()
                         .to_string(),
                 ),
-                (
-                    "Usage trend",
+                ("Usage trend", {
                     if active_entries.len() > 10 {
                         // For weekly view, compare to previous week
                         let prev_week_start = this_week_start - 86400 * 7;
@@ -1173,8 +1170,8 @@ fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                         }
                     } else {
                         "N/A".to_string()
-                    },
-                ),
+                    }
+                }),
             ]
         };
 
