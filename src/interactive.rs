@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{Datelike, Local, TimeZone, Timelike};
+use chrono::{Local, TimeZone, Timelike};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -8,7 +8,6 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use std::io::{self, Write};
-use unicode_width::UnicodeWidthStr;
 
 use crate::history::{format_timestamp, HistoryEntry};
 use crate::ui_utils::{draw_box, write_in_box};

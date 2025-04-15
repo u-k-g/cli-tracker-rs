@@ -479,39 +479,46 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             write!(stdout, "{:<14} {}", key.with(Color::DarkGrey), value)?;
         }
 
-        // Top Right Box - Activity Breakdown
+        // Top Right Box - Most Used Directories (replacing Directory Statistics)
         draw_box(
             &mut stdout,
             left_box_width,
             1,
             right_box_width,
             top_box_height,
-            Some("Activity Breakdown"),
+            Some("Most Used Directories"),
         )?;
 
-        // Activity stats moved to here
-        let activity_stats = [
-            (
-                "First command",
-                if oldest > 0 {
-                    format_timestamp(oldest)
-                } else {
-                    "N/A".to_string()
-                },
-            ),
-            (
-                "Last command",
-                if newest > 0 {
-                    format_timestamp(newest)
-                } else {
-                    "N/A".to_string()
-                },
-            ),
-        ];
+        // Count directory frequency
+        let mut directory_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for entry in &active_entries {
+            if let Some(dir) = &entry.directory {
+                *directory_counts.entry(dir.clone()).or_insert(0) += 1;
+            }
+        }
 
-        for (i, (key, value)) in activity_stats.iter().enumerate() {
+        // Sort by frequency
+        let mut directory_counts: Vec<_> = directory_counts.into_iter().collect();
+        directory_counts.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Display top directories (limited by max_commands)
+        for (i, (dir, count)) in directory_counts.iter().take(max_commands).enumerate() {
+            let display_width = right_box_width.saturating_sub(15) as usize;
+            let truncated_dir = if dir.len() > display_width {
+                format!("{}...", &dir[0..display_width - 3])
+            } else {
+                dir.to_string()
+            };
+
             execute!(stdout, cursor::MoveTo(left_box_width + 3, 2 + i as u16))?;
-            write!(stdout, "{:<14} {}", key.with(Color::DarkGrey), value)?;
+            write!(stdout, "{:2}. {} ", i + 1, truncated_dir)?;
+
+            execute!(
+                stdout,
+                cursor::MoveTo(left_box_width + right_box_width - 10, 2 + i as u16)
+            )?;
+            write!(stdout, "{}", count.to_string().with(Color::DarkGrey))?;
         }
 
         // Middle Left Box - Most Used Commands

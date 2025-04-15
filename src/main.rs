@@ -1,16 +1,13 @@
 use anyhow::{Context, Result};
-use chrono::{Datelike, Local, TimeZone, Timelike};
-use clap::{Parser, Subcommand};
+use chrono::{Local, TimeZone, Timelike};
+use clap::Parser;
 use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode, KeyEvent},
-    execute,
-    style::{self, Color, Stylize},
+    cursor, execute,
+    style::{Color, Stylize},
     terminal::{self, ClearType},
 };
 use std::{
-    fs::File,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Write},
     path::PathBuf,
 };
 use unicode_width::UnicodeWidthStr;
