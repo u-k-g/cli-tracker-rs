@@ -1,225 +1,17 @@
 use anyhow::{Context, Result};
 use chrono::{Datelike, Local, TimeZone, Timelike};
-use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     style::{self, Color, Stylize},
     terminal::{self, ClearType},
 };
-use std::{
-    fs::File,
-    io::{self, BufRead, BufReader, Write},
-    path::PathBuf,
-};
+use std::io::{self, Write};
 use unicode_width::UnicodeWidthStr;
 
-// Declare modules
-mod cli;
-mod history;
-mod interactive;
-mod stats;
-mod ui_utils;
-
-// Use items from modules
-use cli::{Cli, Commands};
-use history::get_history_entries;
-use interactive::run_interactive_viewer;
-use stats::display_stats;
-
-#[derive(Debug, Clone)]
-struct HistoryEntry {
-    timestamp: i64,
-    command: String,
-    directory: Option<String>,
-    duration: Option<i64>,
-    exit_code: Option<i32>,
-}
-
-fn get_zsh_history_path() -> Result<PathBuf> {
-    let home = home::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".zsh_history"))
-}
-
-fn get_cli_stats_log_path() -> Result<PathBuf> {
-    let home = home::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".cli_stats_log"))
-}
-
-fn parse_history_line(line: &str) -> Option<HistoryEntry> {
-    let (timestamp, command_part) = if line.starts_with(": ") {
-        let parts: Vec<&str> = line.splitn(3, ';').collect();
-        if parts.len() < 2 {
-            return None;
-        }
-        let ts_part = parts[0].strip_prefix(": ")?.trim();
-        let timestamp = ts_part.splitn(2, ':').next()?.parse().ok()?;
-        (timestamp, parts.get(1).unwrap_or(&"").to_string())
-    } else {
-        // For basic history entries, use a default timestamp (e.g., 0 or current time)
-        (0, line.to_string()) // Or use chrono::Utc::now().timestamp()
-    };
-
-    let clean_command = command_part.trim().to_string();
-
-    if !clean_command.is_empty() {
-        // Extract directory from cd commands
-        let directory = if clean_command.starts_with("cd ") {
-            clean_command
-                .strip_prefix("cd ")
-                .map(|s| s.trim().to_string())
-        } else {
-            None
-        };
-
-        Some(HistoryEntry {
-            timestamp,
-            command: clean_command,
-            directory,
-            duration: None,  // We don't have duration info in zsh history
-            exit_code: None, // We don't have exit code info in zsh history
-        })
-    } else {
-        None
-    }
-}
-
-fn parse_cli_stats_line(line: &str) -> Option<HistoryEntry> {
-    // Format 1: ": timestamp:0;command:directory"
-    // Format 2: "command" (just the command)
-    // Format 3: ": timestamp:0;command" (no directory)
-
-    if line.starts_with(": ") {
-        // Format 1 or 3 with timestamp
-        let timestamp_part = line.strip_prefix(": ")?;
-        let parts: Vec<&str> = timestamp_part.splitn(2, ';').collect();
-        if parts.len() < 2 {
-            return None;
-        }
-
-        // Get timestamp from first part (timestamp:0)
-        let ts_parts: Vec<&str> = parts[0].splitn(2, ':').collect();
-        let timestamp = ts_parts[0].parse::<i64>().ok()?;
-
-        // Get command and possibly directory
-        let cmd_dir_parts: Vec<&str> = parts[1].splitn(2, ':').collect();
-        let command = cmd_dir_parts[0].to_string();
-
-        // If we have a directory part
-        let directory = if cmd_dir_parts.len() > 1 {
-            Some(cmd_dir_parts[1].to_string())
-        } else {
-            None
-        };
-
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp,
-                command,
-                directory,
-                duration: None,
-                exit_code: None,
-            });
-        }
-    } else {
-        // Format 2: just the command
-        let command = line.trim().to_string();
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp: 0, // No timestamp available
-                command,
-                directory: None,
-                duration: None,
-                exit_code: None,
-            });
-        }
-    }
-
-    None
-}
-
-fn format_timestamp(timestamp: i64) -> String {
-    if timestamp == 0 {
-        return "Timestamp not available".to_string();
-    }
-    match Local.timestamp_opt(timestamp, 0) {
-        chrono::LocalResult::Single(dt) => dt.format("%b %d %Y at %I:%M %P").to_string(),
-        _ => "Invalid timestamp".to_string(),
-    }
-}
-
-// Define box drawing characters
-const TOP_LEFT: &str = "┌";
-const TOP_RIGHT: &str = "┐";
-const BOTTOM_LEFT: &str = "└";
-const BOTTOM_RIGHT: &str = "┘";
-const HORIZONTAL: &str = "─";
-const VERTICAL: &str = "│";
-
-// Helper function to draw a box
-fn draw_box(
-    stdout: &mut io::Stdout,
-    x: u16,
-    y: u16,
-    width: u16,
-    height: u16,
-    title: Option<&str>,
-) -> Result<()> {
-    // Ensure minimum dimensions for a proper box
-    let width = width.max(4); // Minimum width to draw a proper box
-    let height = height.max(3); // Minimum height for a proper box
-
-    // Draw top border with optional title
-    execute!(stdout, cursor::MoveTo(x, y))?;
-    write!(stdout, "{}", TOP_LEFT)?;
-
-    if let Some(title_text) = title {
-        let title_display = format!(" {} ", title_text);
-        let title_width = title_display.width();
-        // Ensure we have enough space for title and borders
-        let remaining_width = width as usize - 2;
-
-        if title_width < remaining_width {
-            let left_border = (remaining_width - title_width) / 2;
-            let right_border = remaining_width - left_border - title_width;
-
-            write!(stdout, "{}", HORIZONTAL.repeat(left_border))?;
-            write!(stdout, "{}", title_display.cyan())?;
-            write!(stdout, "{}", HORIZONTAL.repeat(right_border))?;
-        } else {
-            // Title too long, just draw border
-            write!(stdout, "{}", HORIZONTAL.repeat(remaining_width))?;
-        }
-    } else {
-        write!(stdout, "{}", HORIZONTAL.repeat((width - 2) as usize))?;
-    }
-
-    write!(stdout, "{}", TOP_RIGHT)?;
-
-    // Draw sides
-    for i in 1..height - 1 {
-        execute!(stdout, cursor::MoveTo(x, y + i))?;
-        write!(stdout, "{}", VERTICAL)?;
-        execute!(stdout, cursor::MoveTo(x + width - 1, y + i))?;
-        write!(stdout, "{}", VERTICAL)?;
-    }
-
-    // Draw bottom
-    execute!(stdout, cursor::MoveTo(x, y + height - 1))?;
-    write!(stdout, "{}", BOTTOM_LEFT)?;
-    write!(stdout, "{}", HORIZONTAL.repeat((width - 2) as usize))?;
-    write!(stdout, "{}", BOTTOM_RIGHT)?;
-
-    Ok(())
-}
-
-// Write text inside a box area with an x offset
-fn write_in_box(stdout: &mut io::Stdout, x: u16, y: u16, text: &str, x_offset: u16) -> Result<()> {
-    execute!(stdout, cursor::MoveTo(x + 1 + x_offset, y))?;
-    write!(stdout, "{}", text)?;
-    Ok(())
-}
+use crate::history::{format_timestamp, HistoryEntry};
+use crate::ui_utils::{draw_box, write_in_box};
 
 fn display_detail_view(
     stdout: &mut io::Stdout,
@@ -513,7 +305,7 @@ fn display_detail_view(
         .map(|(day, count)| {
             let intensity = (*count as f64 / max_day_count as f64 * 5.0).round() as usize;
             let symbol = match intensity {
-                0 => "▁",
+                0 => " ",
                 1 => "▂",
                 2 => "▃",
                 3 => "▄",
@@ -544,20 +336,140 @@ fn display_detail_view(
     stdout.flush().context("Failed to flush stdout")
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+pub fn run_interactive_viewer(entries: Vec<HistoryEntry>) -> Result<()> {
+    let mut stdout = io::stdout();
+    execute!(stdout, terminal::EnterAlternateScreen)?;
+    terminal::enable_raw_mode()?;
+    execute!(stdout, cursor::Hide)?;
 
-    match cli.command {
-        Commands::History => {
-            let entries = get_history_entries()?;
-            run_interactive_viewer(entries)?;
-        }
-        Commands::Stats => {
-            let entries = get_history_entries()?;
-            display_stats(&entries)?;
+    let mut current_index = entries.len().saturating_sub(1);
+    // Start directly in detail view mode with the most recent command
+    let mut view_mode: Option<usize> = Some(current_index);
+
+    // Theme colors
+    let header_color = Color::Cyan;
+    let selected_bg = Color::DarkBlue;
+    let selected_fg = Color::White;
+    let number_color = Color::DarkGrey;
+    let separator_color = Color::DarkGrey;
+    let command_color = Color::White;
+
+    loop {
+        if let Some(detail_index) = view_mode {
+            // --- Detail View ---
+            display_detail_view(&mut stdout, &entries[detail_index], &entries, detail_index)?;
+
+            // Input handling for Detail View
+            if let Event::Key(KeyEvent { code, .. }) = event::read()? {
+                match code {
+                    KeyCode::Char('q') | KeyCode::Esc => view_mode = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        // Navigate to previous command in history (newer)
+                        if detail_index > 0 {
+                            view_mode = Some(detail_index - 1);
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        // Navigate to next command in history (older)
+                        if detail_index < entries.len() - 1 {
+                            view_mode = Some(detail_index + 1);
+                        }
+                    }
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        if event::poll(std::time::Duration::from_millis(100))? {
+                            if let Event::Key(KeyEvent {
+                                code: KeyCode::Char('c'),
+                                modifiers,
+                                ..
+                            }) = event::read()?
+                            {
+                                if modifiers.contains(KeyModifiers::CONTROL) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            // --- List View ---
+            execute!(
+                stdout,
+                terminal::Clear(ClearType::All),
+                cursor::MoveTo(0, 0)
+            )?;
+            let header = "Command History".with(header_color).bold();
+            let controls = "(↑/k: up, ↓/j: down, Enter: details, q: quit)".with(Color::DarkGrey);
+            writeln!(stdout, "{} {}\n", header, controls)?;
+
+            let window_size = 10;
+            let start_idx = current_index.saturating_sub(window_size / 2);
+            let end_idx = (start_idx + window_size).min(entries.len());
+
+            for (idx, entry) in entries[start_idx..end_idx].iter().enumerate() {
+                let absolute_index = start_idx + idx;
+                let line_num = entries.len() - absolute_index;
+                let is_selected = absolute_index == current_index;
+
+                execute!(stdout, cursor::MoveTo(0, (idx + 3) as u16))?;
+
+                let prefix = if is_selected {
+                    "▶".with(selected_fg).bold()
+                } else {
+                    " ".with(Color::Reset)
+                };
+                let num = format!("{:4}", line_num).with(number_color);
+                let separator = "│".with(separator_color);
+
+                let command_text = if is_selected {
+                    execute!(stdout, style::SetBackgroundColor(selected_bg))?;
+                    entry.command.as_str().with(selected_fg).bold()
+                } else {
+                    entry.command.as_str().with(command_color)
+                };
+
+                write!(stdout, "{} {} {} {}", prefix, num, separator, command_text)?;
+
+                if is_selected {
+                    execute!(stdout, style::ResetColor)?;
+                }
+            }
+            stdout.flush()?;
+
+            // Input handling for List View
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
+                match code {
+                    KeyCode::Char('q') | KeyCode::Esc => break, // Exit the loop
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        current_index = current_index.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        current_index = (current_index + 1).min(entries.len().saturating_sub(1));
+                    }
+                    KeyCode::Enter | KeyCode::Char('l') => {
+                        view_mode = Some(current_index); // Switch to detail view
+                    }
+                    KeyCode::Char('h') => {
+                        // In list view, 'h' doesn't do anything special
+                    }
+                    KeyCode::Char('c') => {
+                        if modifiers.contains(KeyModifiers::CONTROL) {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
+
+    // Cleanup
+    execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
+    terminal::disable_raw_mode()?;
 
     Ok(())
 }
