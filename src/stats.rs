@@ -479,13 +479,67 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             write!(stdout, "{:<14} {}", key.with(Color::DarkGrey), value)?;
         }
 
-        // Top Right Box - Most Used Directories (replacing Directory Statistics)
+        // Top Right Box - Command Categories (Moved from Middle Right)
         draw_box(
             &mut stdout,
             left_box_width,
-            1,
+            1, // Moved to top row (y=1)
             right_box_width,
-            top_box_height,
+            top_box_height, // Use height of top row boxes
+            Some("Command Categories"),
+        )?;
+
+        let mut categories: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for entry in &active_entries {
+            let first_word = entry.command.split_whitespace().next().unwrap_or("other");
+            *categories.entry(first_word).or_insert(0) += 1;
+        }
+
+        // Sort by frequency
+        let mut categories: Vec<_> = categories.into_iter().collect();
+        categories.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Display top categories with percentage bars (limited by top_layer_content)
+        for (i, (category, count)) in categories
+            .iter()
+            .take(top_layer_content as usize)
+            .enumerate()
+        {
+            let percentage = if active_entries.is_empty() {
+                0
+            } else {
+                (*count as f64 / active_entries.len() as f64 * 100.0) as usize
+            };
+
+            // Ensure we have a fixed width for the category name
+            let category_display = if category.len() > 10 {
+                format!("{}...", &category[..7])
+            } else {
+                format!("{:<10}", category)
+            };
+
+            execute!(
+                stdout,
+                cursor::MoveTo(left_box_width + 3, 2 + i as u16) // Use top row y coordinate base (2)
+            )?;
+            write!(stdout, "{} ", category_display)?;
+
+            // Calculate bar width based on available space
+            let max_bar_width = (right_box_width as usize).saturating_sub(20);
+            let bar_width = (percentage * max_bar_width / 100).min(max_bar_width);
+            // Use a clearer bar character for better visibility
+            let dots = "█".repeat(bar_width);
+            write!(stdout, "{} {}%", dots, percentage)?;
+        }
+
+        // Middle Left Box - Most Used Directories (Moved from Middle Right)
+        draw_box(
+            &mut stdout,
+            0, // Moved to left column (x=0)
+            top_box_height + 1,
+            left_box_width, // Use width of left column
+            commands_box_height,
             Some("Most Used Directories"),
         )?;
 
@@ -504,29 +558,29 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
 
         // Display top directories (limited by max_commands)
         for (i, (dir, count)) in directory_counts.iter().take(max_commands).enumerate() {
-            let display_width = right_box_width.saturating_sub(15) as usize;
+            let display_width = left_box_width.saturating_sub(15) as usize; // Use left_box_width for truncation
             let truncated_dir = if dir.len() > display_width {
                 format!("{}...", &dir[0..display_width - 3])
             } else {
                 dir.to_string()
             };
 
-            execute!(stdout, cursor::MoveTo(left_box_width + 3, 2 + i as u16))?;
+            execute!(stdout, cursor::MoveTo(3, top_box_height + 2 + i as u16))?;
             write!(stdout, "{:2}. {} ", i + 1, truncated_dir)?;
 
             execute!(
                 stdout,
-                cursor::MoveTo(left_box_width + right_box_width - 10, 2 + i as u16)
+                cursor::MoveTo(left_box_width - 10, top_box_height + 2 + i as u16) // Position count relative to left_box_width
             )?;
             write!(stdout, "{}", count.to_string().with(Color::DarkGrey))?;
         }
 
-        // Middle Left Box - Most Used Commands
+        // Middle Right Box - Most Used Commands (Moved from Middle Left)
         draw_box(
             &mut stdout,
-            0,
+            left_box_width, // Moved to right column
             top_box_height + 1,
-            left_box_width,
+            right_box_width, // Use width of right column
             commands_box_height,
             Some("Most Used Commands"),
         )?;
@@ -542,74 +596,29 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         let mut command_counts: Vec<_> = command_counts.into_iter().collect();
         command_counts.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // Calculate how many commands we can show based on available space
         // Display top commands (limited by max_commands)
         for (i, (cmd, count)) in command_counts.iter().take(max_commands).enumerate() {
-            let display_width = left_box_width.saturating_sub(15) as usize;
+            let display_width = right_box_width.saturating_sub(15) as usize; // Use right_box_width for truncation
             let truncated_cmd = if cmd.len() > display_width {
                 format!("{}...", &cmd[0..display_width - 3])
             } else {
                 cmd.to_string()
             };
 
-            execute!(stdout, cursor::MoveTo(3, top_box_height + 2 + i as u16))?;
-            write!(stdout, "{:2}. {} ", i + 1, truncated_cmd)?;
-
-            execute!(
-                stdout,
-                cursor::MoveTo(left_box_width - 10, top_box_height + 2 + i as u16)
-            )?;
-            write!(stdout, "{}", count.to_string().with(Color::DarkGrey))?;
-        }
-
-        // Middle Right Box - Command Categories
-        draw_box(
-            &mut stdout,
-            left_box_width,
-            top_box_height + 1,
-            right_box_width,
-            commands_box_height,
-            Some("Command Categories"),
-        )?;
-
-        let mut categories: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
-        for entry in &active_entries {
-            let first_word = entry.command.split_whitespace().next().unwrap_or("other");
-            *categories.entry(first_word).or_insert(0) += 1;
-        }
-
-        // Sort by frequency
-        let mut categories: Vec<_> = categories.into_iter().collect();
-        categories.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // Display top categories with percentage bars (limited by max_categories)
-        for (i, (category, count)) in categories.iter().take(max_categories).enumerate() {
-            let percentage = if active_entries.is_empty() {
-                0
-            } else {
-                (*count as f64 / active_entries.len() as f64 * 100.0) as usize
-            };
-
-            // Ensure we have a fixed width for the category name
-            let category_display = if category.len() > 10 {
-                format!("{}...", &category[..7])
-            } else {
-                format!("{:<10}", category)
-            };
-
             execute!(
                 stdout,
                 cursor::MoveTo(left_box_width + 3, top_box_height + 2 + i as u16)
             )?;
-            write!(stdout, "{} ", category_display)?;
+            write!(stdout, "{:2}. {} ", i + 1, truncated_cmd)?;
 
-            // Calculate bar width based on available space
-            let max_bar_width = (right_box_width as usize).saturating_sub(20);
-            let bar_width = (percentage * max_bar_width / 100).min(max_bar_width);
-            // Use a clearer bar character for better visibility
-            let dots = "█".repeat(bar_width);
-            write!(stdout, "{} {}%", dots, percentage)?;
+            execute!(
+                stdout,
+                cursor::MoveTo(
+                    left_box_width + right_box_width - 10,
+                    top_box_height + 2 + i as u16
+                ) // Position count relative to total width
+            )?;
+            write!(stdout, "{}", count.to_string().with(Color::DarkGrey))?;
         }
 
         // Bottom Box - Time Patterns
