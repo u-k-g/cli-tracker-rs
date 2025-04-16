@@ -25,164 +25,151 @@ fn get_cli_stats_log_path() -> Result<PathBuf> {
     Ok(home.join(".cli_stats_log"))
 }
 
-fn parse_history_line(line: &str) -> Option<HistoryEntry> {
+fn parse_history_line(line: &str) -> Vec<HistoryEntry> {
+    let mut entries = Vec::new();
     // Handle Zsh history format: ": timestamp:0;command"
     if line.starts_with(": ") {
         let parts: Vec<&str> = line.splitn(3, ';').collect();
         if parts.len() < 2 {
-            return None;
+            return entries;
         }
-
-        let ts_part = parts[0].strip_prefix(": ")?.trim();
-        let timestamp = ts_part.splitn(2, ':').next()?.parse().ok()?;
-        let command = parts[1].trim().to_string();
-
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp,
-                command,
-                directory: None, // Standard Zsh history doesn't store directory
-                duration: None,
-                exit_code: None,
-            });
+        let ts_part = match parts[0].strip_prefix(": ") {
+            Some(s) => s.trim(),
+            None => return entries,
+        };
+        let timestamp = match ts_part.splitn(2, ':').next().and_then(|s| s.parse().ok()) {
+            Some(ts) => ts,
+            None => return entries,
+        };
+        let command = parts[1].trim();
+        for subcmd in command.split("&&") {
+            let clean = subcmd.trim();
+            if !clean.is_empty() {
+                entries.push(HistoryEntry {
+                    timestamp,
+                    command: clean.to_string(),
+                    directory: None,
+                    duration: None,
+                    exit_code: None,
+                });
+            }
         }
+        return entries;
     } else {
         // Plain command
-        let command = line.trim().to_string();
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp: 0,
-                command,
-                directory: None,
-                duration: None,
-                exit_code: None,
-            });
+        for subcmd in line.trim().split("&&") {
+            let clean = subcmd.trim();
+            if !clean.is_empty() {
+                entries.push(HistoryEntry {
+                    timestamp: 0,
+                    command: clean.to_string(),
+                    directory: None,
+                    duration: None,
+                    exit_code: None,
+                });
+            }
         }
+        return entries;
     }
-
-    None
 }
 
-fn parse_cli_stats_line(line: &str) -> Option<HistoryEntry> {
-    // Three possible formats:
-    // 1. Plain command: "git branch --show-current"
-    // 2. Zsh format: ": 1744405541:0;nvim ~/.zshrc"
-    // 3. Stats format: "1744686489|cargo run -- stats|/Users/uzair/01-dev/cli-wrapped"
-    //    Alternative: "1744686489:cargo run -- stats:/Users/uzair/01-dev/cli-wrapped"
-
-    // Try to parse as pipe-delimited format first
+fn parse_cli_stats_line(line: &str) -> Vec<HistoryEntry> {
+    let mut entries = Vec::new();
+    // Pipe-delimited format
     let pipe_parts: Vec<&str> = line.split('|').collect();
     if pipe_parts.len() == 3 {
-        let timestamp = pipe_parts[0].parse::<i64>().ok()?;
-        let command = pipe_parts[1].to_string();
-        let dir_str = pipe_parts[2].trim();
-
-        // Validate the directory - it should start with / or ~ to be valid
-        let directory = if is_valid_directory(dir_str) {
-            Some(dir_str.to_string())
+        let timestamp = pipe_parts[0].parse::<i64>().unwrap_or(0);
+        let directory = if is_valid_directory(pipe_parts[2].trim()) {
+            Some(pipe_parts[2].trim().to_string())
         } else {
             None
         };
-
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp,
-                command,
-                directory,
-                duration: None,
-                exit_code: None,
-            });
+        for subcmd in pipe_parts[1].split("&&") {
+            let clean = subcmd.trim();
+            if !clean.is_empty() {
+                entries.push(HistoryEntry {
+                    timestamp,
+                    command: clean.to_string(),
+                    directory: directory.clone(),
+                    duration: None,
+                    exit_code: None,
+                });
+            }
         }
+        return entries;
     }
-
-    // Try to parse as timestamp:command:directory format
+    // Colon-delimited format
     if !line.starts_with(": ") {
         let parts: Vec<&str> = line.splitn(3, ':').collect();
-        if parts.len() >= 3 {
-            // Check if first part looks like a timestamp (all digits)
-            if parts[0].chars().all(|c| c.is_digit(10)) {
-                let timestamp = parts[0].parse::<i64>().ok()?;
-
-                // Get the directory (last part)
-                let dir_str = parts.last().unwrap().trim();
-
-                // Validate the directory
-                let directory = if is_valid_directory(dir_str) {
-                    Some(dir_str.to_string())
-                } else {
-                    None
-                };
-
-                // Join parts after the timestamp and before the last part as the command
-                let command_parts = &parts[1..parts.len() - 1];
-                let command = command_parts.join(":").trim().to_string();
-
-                if !command.is_empty() {
-                    return Some(HistoryEntry {
+        if parts.len() >= 3 && parts[0].chars().all(|c| c.is_digit(10)) {
+            let timestamp = parts[0].parse::<i64>().unwrap_or(0);
+            let dir_str = parts.last().unwrap().trim();
+            let directory = if is_valid_directory(dir_str) {
+                Some(dir_str.to_string())
+            } else {
+                None
+            };
+            let command_parts = &parts[1..parts.len() - 1];
+            let command = command_parts.join(":").trim().to_string();
+            for subcmd in command.split("&&") {
+                let clean = subcmd.trim();
+                if !clean.is_empty() {
+                    entries.push(HistoryEntry {
                         timestamp,
-                        command,
-                        directory,
+                        command: clean.to_string(),
+                        directory: directory.clone(),
                         duration: None,
                         exit_code: None,
                     });
                 }
             }
+            return entries;
         }
     }
-
-    // Try to parse as Zsh history format
+    // Zsh history format
     if line.starts_with(": ") {
-        let timestamp_part = line.strip_prefix(": ")?;
+        let timestamp_part = line.strip_prefix(": ").unwrap_or("");
         let parts: Vec<&str> = timestamp_part.splitn(2, ';').collect();
         if parts.len() < 2 {
-            return None;
+            return entries;
         }
-
-        // Get timestamp from first part (timestamp:0)
         let ts_parts: Vec<&str> = parts[0].splitn(2, ':').collect();
-        let timestamp = ts_parts[0].parse::<i64>().ok()?;
-
-        // Now try to extract command and possibly directory
+        let timestamp = ts_parts[0].parse::<i64>().unwrap_or(0);
         let cmd_dir: Vec<&str> = parts[1].splitn(2, ':').collect();
-        let command = cmd_dir[0].to_string();
-
-        // If there's a directory part
-        let directory = if cmd_dir.len() > 1 {
-            let dir_str = cmd_dir[1].trim();
-            // Validate the directory
-            if is_valid_directory(dir_str) {
-                Some(dir_str.to_string())
-            } else {
-                None
-            }
+        let directory = if cmd_dir.len() > 1 && is_valid_directory(cmd_dir[1].trim()) {
+            Some(cmd_dir[1].trim().to_string())
         } else {
             None
         };
-
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp,
-                command,
-                directory,
-                duration: None,
-                exit_code: None,
-            });
+        for subcmd in cmd_dir[0].split("&&") {
+            let clean = subcmd.trim();
+            if !clean.is_empty() {
+                entries.push(HistoryEntry {
+                    timestamp,
+                    command: clean.to_string(),
+                    directory: directory.clone(),
+                    duration: None,
+                    exit_code: None,
+                });
+            }
         }
+        return entries;
     } else {
-        // Last resort: treat as just a plain command
-        let command = line.trim().to_string();
-        if !command.is_empty() {
-            return Some(HistoryEntry {
-                timestamp: 0,
-                command,
-                directory: None,
-                duration: None,
-                exit_code: None,
-            });
+        // Plain command
+        for subcmd in line.trim().split("&&") {
+            let clean = subcmd.trim();
+            if !clean.is_empty() {
+                entries.push(HistoryEntry {
+                    timestamp: 0,
+                    command: clean.to_string(),
+                    directory: None,
+                    duration: None,
+                    exit_code: None,
+                });
+            }
         }
+        return entries;
     }
-
-    None
 }
 
 // Helper function to validate if a string looks like a valid directory path
@@ -215,7 +202,7 @@ pub fn get_history_entries() -> Result<Vec<HistoryEntry>> {
         let entries: Vec<HistoryEntry> = reader
             .lines()
             .filter_map(|line| line.ok())
-            .filter_map(|line| parse_cli_stats_line(&line))
+            .flat_map(|line| parse_cli_stats_line(&line))
             .collect();
 
         if !entries.is_empty() {
@@ -231,7 +218,7 @@ pub fn get_history_entries() -> Result<Vec<HistoryEntry>> {
     let entries: Vec<HistoryEntry> = reader
         .lines()
         .filter_map(|line| line.ok())
-        .filter_map(|line| parse_history_line(&line))
+        .flat_map(|line| parse_history_line(&line))
         .collect();
 
     Ok(entries)

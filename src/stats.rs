@@ -749,18 +749,47 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
 
         // Calculate total from day_of_week_counts to ensure percentages add up to 100%
         let total_days_count: usize = day_of_week_counts.iter().sum();
+        let mut percentages = vec![0; 7];
+        let mut float_percentages = vec![0.0; 7];
+        let mut sum = 0;
 
-        for (i, &count) in day_of_week_counts.iter().enumerate() {
-            let percentage = if total_days_count == 0 {
-                0
-            } else {
-                count * 100 / total_days_count.max(1)
-            };
+        if total_days_count > 0 {
+            for (i, &count) in day_of_week_counts.iter().enumerate() {
+                let pct = (count as f64 / total_days_count as f64) * 100.0;
+                float_percentages[i] = pct;
+                percentages[i] = pct.round() as i32;
+                sum += percentages[i];
+            }
+            // Adjust so total is exactly 100%
+            if sum != 100 {
+                // Find the index with the largest fractional part
+                let mut diffs: Vec<(usize, f64)> = float_percentages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &f)| (i, f - (percentages[i] as f64)))
+                    .collect();
+                if sum < 100 {
+                    // Add to the day with the largest positive remainder
+                    diffs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                    for _ in 0..(100 - sum) {
+                        percentages[diffs[0].0] += 1;
+                    }
+                } else if sum > 100 {
+                    // Subtract from the day with the smallest (most negative) remainder
+                    diffs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                    for _ in 0..(sum - 100) {
+                        percentages[diffs[0].0] -= 1;
+                    }
+                }
+            }
+        }
+
+        for (i, &pct) in percentages.iter().enumerate() {
             execute!(
                 stdout,
                 cursor::MoveTo(distribution_start_x + i as u16 * day_spacing, bottom_y + 4)
             )?;
-            write!(stdout, "{}:{}%", days[i], percentage)?;
+            write!(stdout, "{}:{}%", days[i], pct)?;
         }
 
         // Wait for user input
