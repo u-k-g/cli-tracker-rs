@@ -80,9 +80,9 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             .saturating_sub(header_lines)
             .saturating_sub(border_lines);
 
-        // Time patterns content (reduced from 4 to 3 since we're removing a line)
-        let time_patterns_min = 3;
-        let time_patterns_max = 4;
+        // Time patterns content (reduced from 4 to 2 since we removed a line)
+        let time_patterns_min = 2;
+        let time_patterns_max = 3;
 
         // Middle layer content (start with 3, max 10)
         let middle_layer_min = 3;
@@ -96,7 +96,7 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         // 5. Any extra goes to top layer (though it's capped at its max)
 
         // Update top layer max to 6 to accommodate additional content line
-        let top_layer_max = 6; // Changed from 5 to 6
+        let top_layer_max = 5;
 
         // When terminal height is limited, reduce middle box height
         let adjusted_middle_layer_min = if term_height <= 20 {
@@ -406,24 +406,6 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                         .len()
                         .to_string(),
                 ),
-                ("Usage trend", {
-                    if week_offset < 0 && active_entries.len() > 10 {
-                        // For lifetime view, show if usage is increasing or decreasing
-                        let halfway = active_entries.len() / 2;
-                        let old_half_count = active_entries.iter().take(halfway).count();
-                        let new_half_count = active_entries.len() - old_half_count;
-
-                        if new_half_count > old_half_count * 12 / 10 {
-                            "↑ Increasing".to_string()
-                        } else if new_half_count < old_half_count * 8 / 10 {
-                            "↓ Decreasing".to_string()
-                        } else {
-                            "→ Steady".to_string()
-                        }
-                    } else {
-                        "N/A".to_string()
-                    }
-                }),
             ]
         } else {
             // Weekly stats
@@ -447,30 +429,6 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
                         .len()
                         .to_string(),
                 ),
-                ("Usage trend", {
-                    if active_entries.len() > 10 {
-                        // For weekly view, compare to previous week
-                        let prev_week_start = this_week_start - 86400 * 7;
-                        let prev_week_end = this_week_end - 86400 * 7;
-
-                        let prev_week_count = entries
-                            .iter()
-                            .filter(|e| {
-                                e.timestamp >= prev_week_start && e.timestamp <= prev_week_end
-                            })
-                            .count();
-
-                        if commands_this_week > prev_week_count * 12 / 10 {
-                            "↑ Increasing".to_string()
-                        } else if commands_this_week < prev_week_count * 8 / 10 {
-                            "↓ Decreasing".to_string()
-                        } else {
-                            "→ Steady".to_string()
-                        }
-                    } else {
-                        "N/A".to_string()
-                    }
-                }),
             ]
         };
 
@@ -653,25 +611,6 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             0.0
         };
 
-        // Draw hourly pattern with +/- style
-        execute!(stdout, cursor::MoveTo(3, bottom_y + 1))?;
-        write!(stdout, "Hourly activity: ")?;
-
-        let mut hour_viz = String::new();
-        hour_viz.push_str("[Hours] ");
-        for i in 0..24 {
-            // Use - for below average, + for above average, · for zeros
-            let symbol = if hour_counts[i] == 0 {
-                "·"
-            } else if (hour_counts[i] as f64) < avg_usage {
-                "-"
-            } else {
-                "+"
-            };
-            hour_viz.push_str(symbol);
-        }
-        write!(stdout, "{}", hour_viz)?;
-
         // Find peak hour of day
         let (peak_hour, peak_count) = hour_counts
             .iter()
@@ -717,7 +656,7 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         let peak_day = weekdays[peak_day_idx];
 
         // Display peak times with consistent spacing
-        execute!(stdout, cursor::MoveTo(3, bottom_y + 2))?;
+        execute!(stdout, cursor::MoveTo(3, bottom_y + 1))?;
         if *peak_count > 0 {
             write!(
                 stdout,
@@ -728,7 +667,7 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
             write!(stdout, "Peak hour: None")?;
         }
 
-        execute!(stdout, cursor::MoveTo(3, bottom_y + 3))?;
+        execute!(stdout, cursor::MoveTo(3, bottom_y + 2))?;
         if *peak_day_count > 0 {
             write!(
                 stdout,
@@ -740,7 +679,7 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         }
 
         // Day of week distribution with better alignment
-        execute!(stdout, cursor::MoveTo(3, bottom_y + 4))?;
+        execute!(stdout, cursor::MoveTo(3, bottom_y + 3))?;
         write!(stdout, "Day distribution: ")?;
 
         let days = ["M", "T", "W", "T", "F", "S", "S"];
@@ -787,7 +726,7 @@ pub fn display_stats(entries: &[HistoryEntry]) -> Result<()> {
         for (i, &pct) in percentages.iter().enumerate() {
             execute!(
                 stdout,
-                cursor::MoveTo(distribution_start_x + i as u16 * day_spacing, bottom_y + 4)
+                cursor::MoveTo(distribution_start_x + i as u16 * day_spacing, bottom_y + 3)
             )?;
             write!(stdout, "{}:{}%", days[i], pct)?;
         }
