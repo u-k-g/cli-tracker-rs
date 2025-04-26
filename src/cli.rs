@@ -13,4 +13,6 @@ pub enum Commands {
     History,
     /// Show summary statistics about command usage
     Stats,
+    /// Show today's stats
+    Today,
 }

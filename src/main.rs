@@ -14,13 +14,14 @@ use unicode_width::UnicodeWidthStr;
 
 // Declare modules
 mod cli;
+mod days;
 mod history;
 mod interactive;
 mod stats;
 mod ui_utils;
-
 // Use items from modules
 use cli::{Cli, Commands};
+use days::display_today_stats;
 use history::get_history_entries;
 use interactive::run_interactive_viewer;
 use stats::display_stats;
@@ -553,6 +554,10 @@ async fn main() -> Result<()> {
         Commands::Stats => {
             let entries = get_history_entries()?;
             display_stats(&entries)?;
+        }
+        Commands::Today => {
+            let entries = get_history_entries()?;
+            display_today_stats(&entries)?;
         }
     }
 
